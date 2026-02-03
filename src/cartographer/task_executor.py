@@ -1,17 +1,18 @@
 from __future__ import annotations
 
+import logging
 import multiprocessing
 import os
 from typing import TYPE_CHECKING, Callable, TypeVar, final
 
 from typing_extensions import ParamSpec, override
 
-from cartographer.interfaces.multiprocessing import TaskExecutor
+from cartographer.interfaces.multiprocessing import Scheduler, TaskExecutor
 
 if TYPE_CHECKING:
     from multiprocessing.connection import Connection
 
-    from cartographer.schedulers.klipper import KlipperScheduler
+logger = logging.getLogger(__name__)
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -25,29 +26,32 @@ def _reset_worker_priority() -> None:
     try:
         # Reset to normal scheduling class (SCHED_OTHER, priority 0)
         os.sched_setscheduler(0, os.SCHED_OTHER, os.sched_param(0))
-    except (OSError, AttributeError):
-        pass
+    except (OSError, AttributeError) as e:
+        logger.debug("Could not reset scheduler class: %s", e)
 
     try:
         # Set positive nice value - lower priority than default
         os.nice(10)
-    except OSError:
-        pass
+    except OSError as e:
+        logger.debug("Could not set nice value: %s", e)
 
     try:
         # Clear any CPU affinity restrictions - let kernel schedule freely
         cpu_count = os.cpu_count() or 1
         os.sched_setaffinity(0, set(range(cpu_count)))
-    except (OSError, AttributeError):
-        pass
+    except (OSError, AttributeError) as e:
+        logger.debug("Could not reset CPU affinity: %s", e)
 
 
 @final
 class MultiprocessingExecutor(TaskExecutor):
     """Execute tasks in a separate process."""
 
-    def __init__(self, scheduler: KlipperScheduler) -> None:
+    DEFAULT_TIMEOUT: float = 300.0  # 5 minutes
+
+    def __init__(self, scheduler: Scheduler, timeout: float | None = None) -> None:
         self._scheduler = scheduler
+        self._timeout = timeout if timeout is not None else self.DEFAULT_TIMEOUT
 
     @override
     def run(self, fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
@@ -71,7 +75,15 @@ class MultiprocessingExecutor(TaskExecutor):
         pipe_fd = parent_conn.fileno()
         sentinel_fd = proc.sentinel
 
-        ready = self._scheduler.wait_for_fds([pipe_fd, sentinel_fd])
+        ready = self._scheduler.wait_for_fds([pipe_fd, sentinel_fd], timeout=self._timeout)
+
+        if not ready:
+            proc.terminate()
+            proc.join(timeout=1.0)
+            parent_conn.close()
+            raise TimeoutError(
+                f"Worker process timed out after {self._timeout} seconds"
+            )
 
         if pipe_fd in ready:
             try:
