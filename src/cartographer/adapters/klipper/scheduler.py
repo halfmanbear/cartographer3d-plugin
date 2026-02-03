@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import select
 from typing import TYPE_CHECKING, Callable, Sequence, final, overload
 
 from typing_extensions import override
@@ -55,12 +56,13 @@ class KlipperScheduler(Scheduler):
             result = completion.wait(
                 self._reactor.monotonic() + timeout if timeout else self._reactor.NEVER,
             )
-            # If multiple fds ready simultaneously, check them all
+            # If multiple fds ready simultaneously, check them all.
+            # The reactor callback only fires for the first fd, so we do a
+            # non-blocking select to catch any others that became ready
+            # between callback registration and completion.
             if result is not None:
                 for fd in fds:
                     if fd not in ready_fds:
-                        # Additional readability check for race conditions
-                        import select
                         r, _, _ = select.select([fd], [], [], 0)
                         if r:
                             ready_fds.append(fd)
@@ -69,7 +71,6 @@ class KlipperScheduler(Scheduler):
             for handle in handles:
                 self._reactor.unregister_fd(handle)
 
-    # Keep wait_until for backward compat, but prefer wait_for_fds
     @overload
     def wait_until(
         self,
