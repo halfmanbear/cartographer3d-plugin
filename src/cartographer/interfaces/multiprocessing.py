@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Callable, Protocol, TypeVar, overload
+from typing import Callable, Protocol, Sequence, TypeVar, overload
 
 from typing_extensions import ParamSpec
 
@@ -42,6 +42,29 @@ class Scheduler(Protocol):
 
     def sleep(self, seconds: float) -> None:
         """Sleep for the specified duration."""
+        ...
+
+    def wait_for_fds(
+        self,
+        fds: Sequence[int],
+        timeout: float | None = None,
+    ) -> list[int]:
+        """
+        Block until at least one file descriptor is readable.
+
+        Parameters
+        ----------
+        fds : Sequence[int]
+            File descriptors to monitor for readability.
+        timeout : float | None
+            Maximum time to wait in seconds. None means wait indefinitely.
+
+        Returns
+        -------
+        list[int]
+            List of file descriptors that are ready for reading.
+            Empty list if timeout expired with no ready fds.
+        """
         ...
 
     @overload
